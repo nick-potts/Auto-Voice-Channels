@@ -43,7 +43,11 @@ from . import (
     toggleposition,
     transfer,
     uniquenames,
-    unlimit
+    unlimit,
+    moveall,
+    muteall,
+    unmuteall,
+    wakeup
 )
 
 commands = {
@@ -91,6 +95,10 @@ commands = {
     "uniquenames": uniquenames.command,
     "unlimit": unlimit.command,
     "unlock": unlimit.command,
+    "moveall": moveall.command,
+    "muteall": muteall.command,
+    "unmuteall": unmuteall.command,
+    "wakeup": wakeup.command
 }
 
 

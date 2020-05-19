@@ -50,6 +50,8 @@ To get more info about a particular command, type `vc/help <command>`.
 
 `listroles` - List all of the roles (and their IDs) in the server, or all the roles that a particular user has.
 
+`moveall` - Move all users in one voice chat to another voice chat. You can specify either the name or the ID.
+
 All the above commands are restricted to admin users. The commands below can be used by anyone.
 
 `help` - This message :) Use `vc/help <command>` to get more information about a particular command.

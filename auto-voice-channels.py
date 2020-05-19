@@ -91,6 +91,11 @@ async def cleanup(client):
 
         if not cfg.FIRST_RUN_COMPLETE:
             cfg.FIRST_RUN_COMPLETE = True
+            for guild in client.guilds:
+                while discord.utils.get(guild.voice_channels, name="boing") is not None:
+                    await discord.utils.get(guild.voice_channels, name="boing").delete()
+                while discord.utils.get(guild.voice_channels, name="bounce") is not None:
+                    await discord.utils.get(guild.voice_channels, name="bounce").delete()
             guilds = func.get_guilds(client)
             if guilds:
                 text = 'vc/help'
@@ -860,6 +865,12 @@ async def on_voice_state_update(member, before, after):
     join_channels = func.get_join_channels(guild, settings)
 
     if after.channel:
+        if after.channel.id == 662268069917229061:
+            movieChannel = guild.get_channel(693840486489653268)
+            if movieChannel:
+                await movieChannel.set_permissions(member, read_messages=True)
+        if after.channel.id == 694182409591324762:
+            await member.edit(mute=False)
         if after.channel.id in settings['auto_channels']:
             await func.create_secondary(guild, after.channel, member)
         elif after.channel.id in secondaries:
@@ -909,6 +920,10 @@ async def on_voice_state_update(member, before, after):
                     cfg.JOINS_IN_PROGRESS[member.id]
 
     if before.channel:
+        if before.channel.id == 662268069917229061:
+            movieChannel = guild.get_channel(693840486489653268)
+            if movieChannel:
+                await movieChannel.set_permissions(member, overwrite=None)
         if before.channel.id in secondaries:
             members = [m for m in before.channel.members if not m.bot]
             bitrate = None
