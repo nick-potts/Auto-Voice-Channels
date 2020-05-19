@@ -58,8 +58,19 @@ SERVER_LOCATION = 'Unknown'
 TICK_TIME = 0
 G_TICK_TIME = 0
 TIMING_LOG = 0
+TIMINGS = {}
 
 SEED = int(time())
 
 CONFIG = get_config()
+
+defaults = {
+    'loop_interval': 7,
+    'gold_interval': 3,
+    'sapphires': {}
+}
+for d, dv in defaults.items():
+    if d not in CONFIG:
+        CONFIG[d] = dv
+
 TICK_RATE = CONFIG['loop_interval']

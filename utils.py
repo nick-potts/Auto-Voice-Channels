@@ -45,6 +45,16 @@ def func_timer(threshold=0.5):
 
 
 @func_timer()
+def format_timings():
+    s = ""
+    l = [[k, cfg.TIMINGS[k]] for k in cfg.TIMINGS]
+    l.sort(key=lambda k: k[1], reverse=True)
+    for t in l:
+        s += "`{0}`: {1:.2f}\n".format(t[0], t[1])
+    return s.strip()
+
+
+@func_timer()
 def log(msg, guild=None):
     text = datetime.now(pytz.timezone(cfg.CONFIG['log_timezone'])).strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
     if guild:
@@ -88,6 +98,16 @@ def get_config():
         import sys
         sys.exit(0)
     return read_json(cf)
+
+
+@func_timer()
+def set_config(data):
+    cf = os.path.join(cfg.SCRIPT_DIR, 'config.json')
+    if not os.path.exists(cf):
+        print("Config file doesn't exist!")
+        import sys
+        sys.exit(0)
+    return write_json(cf, data, indent=4)
 
 
 @func_timer()
@@ -425,6 +445,8 @@ def eval_expression(text, is_sapphire, creator, party, game_name):
         'ROLE': [r.id for r in creator.roles],
         'LIVE': ((creator.voice and hasattr(creator.voice, 'self_stream') and creator.voice.self_stream) or
                  (act and act.type == discord.ActivityType.streaming)),
+        'LIVE_DISCORD': creator.voice and hasattr(creator.voice, 'self_stream') and creator.voice.self_stream,
+        'LIVE_EXTERNAL': act and act.type == discord.ActivityType.streaming,
         'GAME': game_name,
     }
     if is_sapphire:

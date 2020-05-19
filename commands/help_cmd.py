@@ -36,7 +36,7 @@ async def execute(ctx, params):
                 "Use **<PREFIX>unlock** to remove the limit.\n\n"
                 " ·  **<PREFIX>private** - "
                 "Make your voice channel private, preventing anyone from joining you directly. "
-                "Creates a \"⇧ Join {}\" channel below yours so people can request to join you.\n\n"
+                "Creates a \"⇩ Join {}\" channel above yours so people can request to join you.\n\n"
                 " ·  **<PREFIX>kick `@USER`** - "
                 "Start a votekick to remove someone from your channel.\n\n"
                 " ·  **<PREFIX>transfer `@USER`** - "
@@ -212,8 +212,8 @@ async def execute(ctx, params):
             )
             e.add_field(
                 name=" ·  `LIVE`",
-                value="Whether or not the creator of the channel is streaming with Twitch. Does **not** yet include "
-                      "the new \"Go live\" feature in discord (waiting for discord.py v1.3 release).\n\n"
+                value="Whether or not the creator of the channel is streaming. Use `LIVE_DISCORD` to only detect "
+                "discord's \"Go Live\" streams, or `LIVE_EXTERNAL` for Twitch. `LIVE` will include both.\n\n"
             )
             e.add_field(
                 name=" ·  `PLAYERS>number`",

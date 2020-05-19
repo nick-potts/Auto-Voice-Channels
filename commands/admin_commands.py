@@ -1,7 +1,7 @@
+import json
 import os
 import sys
 import traceback
-from copy import deepcopy
 from datetime import datetime
 
 import cfg
@@ -20,8 +20,8 @@ except ImportError:
 
 async def admin_command(cmd, ctx):
     client = ctx['client']
-    admin = ctx['admin']
     message = ctx['message']
+    channel = message.channel
     params = ctx['params']
     params_str = ctx['params_str']
     guilds = ctx['guilds']
@@ -30,7 +30,7 @@ async def admin_command(cmd, ctx):
     if cmd == 'log':
         logfile = "log{}.txt".format("" if cfg.SAPPHIRE_ID is None else cfg.SAPPHIRE_ID)
         if not os.path.exists(logfile):
-            await admin.dm_channel.send("No log file")
+            await channel.send("No log file")
             return
         with open(logfile, 'r', encoding="utf8") as f:
             data = f.read()
@@ -67,10 +67,10 @@ async def admin_command(cmd, ctx):
         data = '\n'.join(lines)
         data = '```autohotkey\n' + data
         data = data + '```'
-        await admin.dm_channel.send(data)
+        await channel.send(data)
 
     if cmd == 'stats':
-        r = await admin.dm_channel.send(". . .")
+        r = await channel.send(". . .")
         t1 = message.created_at
         t2 = r.created_at
         response_time = (t2 - t1).total_seconds()
@@ -91,15 +91,15 @@ async def admin_command(cmd, ctx):
         mem = psutil.virtual_memory()
         disk = psutil.disk_usage('/')
         await r.edit(content=(
-            "Servers: **{active_servs}** (T:{tot_servs} S:{shards}) \t "
+            "Servers: **{tot_servs}** (A:{active_servs} S:{shards}) \t "
             "Users: **{users}** \t Channels: **{channels}** \n"
             "Response time: **{rt}** \t Tick rate: **{tr}** \t Tick time: **{tt}** | **{gtt}**\n"
             "CPU: **{cpu}%** \t MEM: **{memg} ({memp}%)** \t DISK: **{diskg} ({diskp}%)**\n"
             "**Last commit:** {commit}\n"
             "**Lines of code:** {lines}\n"
-            "**Timings:** {timings}".format(
-                active_servs=utils.num_active_guilds(guilds),
+            "**Timings:** \n{timings}".format(
                 tot_servs=len(guilds),
+                active_servs=utils.num_active_guilds(guilds),
                 shards=utils.num_shards(guilds),
                 users=num_users,
                 channels=utils.num_active_channels(guilds),
@@ -111,7 +111,7 @@ async def admin_command(cmd, ctx):
                 diskg="{0:.1f}GB".format(disk.used / 1024 / 1024 / 1024), diskp=round(disk.percent),
                 commit=LAST_COMMIT,
                 lines=lines_of_code,
-                timings=cfg.TIMING_LOG
+                timings=utils.format_timings()
             )
         ))
 
@@ -132,16 +132,16 @@ async def admin_command(cmd, ctx):
                 g['num']
             )
         r += "\n\n**{}**".format(utils.num_active_channels(guilds))
-        await admin.dm_channel.send(r)
+        await channel.send(r)
 
     if cmd == 'patrons':
         if patreon_info is None:
-            await admin.dm_channel.send(content='❌')
+            await channel.send(content='❌')
             return
 
         patrons = patreon_info.fetch_patrons(force_update=True)
         if not patrons:
-            await admin.dm_channel.send(content='❌')
+            await channel.send(content='❌')
             return
         fields = {}
         auths = patreon_info.update_patron_servers(patrons)
@@ -166,10 +166,36 @@ async def admin_command(cmd, ctx):
                 for f, fv in field_chunk.items():
                     fv = fv if fv else "None"
                     e.add_field(name=f, value=fv)
-                await admin.dm_channel.send(embed=e)
+                await channel.send(embed=e)
         except:
-            await admin.dm_channel.send(traceback.format_exc())
+            await channel.send(traceback.format_exc())
             await func.react(message, '❌')
+
+    if cmd == 'sapphiredebug':
+        if cfg.SAPPHIRE_ID is None:
+            await channel.send(content='❌ Not a sapphire')
+            return
+
+        if patreon_info is None:
+            await channel.send(content='❌ No patreon_info')
+            return
+
+        auths = utils.read_json(os.path.join(cfg.SCRIPT_DIR, "patron_auths.json"))
+        initiator_id = cfg.CONFIG["sapphires"][str(cfg.SAPPHIRE_ID)]['initiator']
+        msg = ("Sapphire ID: {}\n"
+               "User: `{}`\n"
+               "Actual guilds: {}\n"
+               "Config guilds: {}\n"
+               "Authenticated guilds: {}\n"
+               "get_guilds: {}".format(
+                   cfg.SAPPHIRE_ID,
+                   initiator_id,
+                   ", ".join(['`' + str(g.id) + '`' for g in client.guilds]),
+                   ", ".join(['`' + str(g) + '`' for g in cfg.CONFIG["sapphires"][str(cfg.SAPPHIRE_ID)]['servers']]),
+                   ", ".join(['`' + str(g) + '`' for g in auths[str(initiator_id)]['servers']]),
+                   ", ".join(['`' + str(g.id) + '`' for g in func.get_guilds(client)]))
+               )
+        await channel.send(msg)
 
     if cmd == 'status':
         g = utils.strip_quotes(params_str)
@@ -182,25 +208,25 @@ async def admin_command(cmd, ctx):
             )
             await func.react(message, '✅')
         except:
-            await admin.dm_channel.send(traceback.format_exc())
+            await channel.send(traceback.format_exc())
             await func.react(message, '❌')
 
     if cmd == 'settings':
-        g = utils.strip_quotes(params_str)
+        gid = utils.strip_quotes(params_str)
         try:
-            int(g)
+            int(gid)
         except ValueError:
             for x in guilds:
-                if x.name == g:
-                    g = str(x.id)
+                if x.name == gid:
+                    gid = str(x.id)
                     break
-        fname = g + '.json'
+        fname = gid + '.json'
         fp = os.path.join(cfg.SCRIPT_DIR, "guilds", fname)
         if os.path.exists(fp):
-            g = int(g)
-            gn = client.get_guild(g).name
-            head = "**{}** `{}`".format(gn, g)
-            head += "💎" if func.is_sapphire(g) else ("💳" if func.is_gold(g) else "")
+            gid = int(gid)
+            g = client.get_guild(gid)
+            head = "**{}** `{}`{}".format(g.name, gid, ("✅" if g in func.get_guilds(client) else "❌"))
+            head += "💎" if func.is_sapphire(gid) else ("💳" if func.is_gold(gid) else "")
             s = head
             s += "\n```json\n"
             with open(fp, 'r') as f:
@@ -208,11 +234,11 @@ async def admin_command(cmd, ctx):
             s += file_content
             s += '```'
             try:
-                await admin.dm_channel.send(s)
+                await channel.send(s)
             except discord.errors.HTTPException:
                 # Usually because message is over character limit
                 haste_url = await utils.hastebin(file_content)
-                await admin.dm_channel.send("{}\n{}".format(head, haste_url))
+                await channel.send("{}\n{}".format(head, haste_url))
         else:
             await func.react(message, '❌')
 
@@ -225,7 +251,7 @@ async def admin_command(cmd, ctx):
             log("Force Disabling", g)
             await func.react(message, '✅')
         except:
-            await admin.dm_channel.send(traceback.format_exc())
+            await channel.send(traceback.format_exc())
             await func.react(message, '❌')
 
     if cmd == 'enable':
@@ -237,7 +263,7 @@ async def admin_command(cmd, ctx):
             log("Force Enabling", g)
             await func.react(message, '✅')
         except:
-            await admin.dm_channel.send(traceback.format_exc())
+            await channel.send(traceback.format_exc())
             await func.react(message, '❌')
 
     if cmd == 'info':
@@ -262,9 +288,9 @@ async def admin_command(cmd, ctx):
             s += '\n\n**__{} Games:__**\n'.format(len(games))
             s += '\n'.join(games)
             s = s.replace('\n\n\n', '\n\n')
-            await admin.dm_channel.send(s)
+            await channel.send(s)
         except:
-            await admin.dm_channel.send(traceback.format_exc())
+            await channel.send(traceback.format_exc())
             await func.react(message, '❌')
 
     if cmd == 'whois':
@@ -298,62 +324,39 @@ async def admin_command(cmd, ctx):
                         g['patron'], gid, g['guild_name'], g['guild_size'], g['user_name'], g['role']
                     )
 
-                await echo(s, admin.dm_channel)
+                await echo(s, channel)
             else:
-                await admin.dm_channel.send("¯\\_(ツ)_/¯")
+                await channel.send("¯\\_(ツ)_/¯")
         except:
-            await admin.dm_channel.send(traceback.format_exc())
+            await channel.send(traceback.format_exc())
             await func.react(message, '❌')
 
-    if cmd == 'addsapphire':
-        if cfg.SAPPHIRE_ID is not None:
-            await admin.dm_channel.send("You need to DM the main public bot for this.")
-            await func.react(message, '❌')
-            return
-        params = params_str.split('\n')
-        sapphire = {}
+    if cmd == 'votekicks':
         try:
-            for l in params:
-                if l.startswith('server:'):
-                    l = l.split(':', 1)[1]
-                    sapphire['servers'] = [int(l.strip())]
-                elif l.startswith('initiator:'):
-                    l = l.split(':', 1)[1]
-                    sapphire['initiator'] = int(l.strip())
-                elif l.startswith('client_id:'):
-                    l = l.split(':', 1)[1]
-                    sapphire['client_id'] = int(l.strip())
-                elif l.startswith('token:'):
-                    l = l.split(':', 1)[1]
-                    sapphire['token'] = l.strip()
+            readable = {}
+            for k, kv in cfg.VOTEKICKS.items():
+                readable[k] = {
+                    "initiator": kv['initiator'].display_name,
+                    "participants": [m.display_name for m in kv['participants']],
+                    "required_votes": kv['required_votes'],
+                    "offender": kv['offender'].display_name,
+                    "reason": kv['reason'],
+                    "in_favor": [m.display_name for m in kv['in_favor']],
+                    "voice_channel": kv['voice_channel'].id,
+                    "message": kv['message'].id,
+                    "end_time": datetime.fromtimestamp(kv['end_time']).strftime("%Y-%m-%d %H:%M")
+                }
+            s = "```json\n" + json.dumps(readable, indent=1, sort_keys=True) + "```"
+            print(s)
+            try:
+                await channel.send(s)
+            except discord.errors.HTTPException:
+                # Usually because message is over character limit
+                haste_url = await utils.hastebin(s)
+                await channel.send(haste_url)
         except:
-            await admin.dm_channel.send(traceback.format_exc())
+            await channel.send(traceback.format_exc())
             await func.react(message, '❌')
-            return
-        required_params = ['servers', 'client_id', 'token', 'initiator']
-        for p in required_params:
-            if p not in sapphire:
-                await admin.dm_channel.send(
-                    "Missing required parameter: `{}`\n\nExpected syntax:\n```\n"
-                    "addsapphire\n"
-                    "server: 332246283601313794\n"
-                    "initiator: 291185187105275904\n"
-                    "client_id: 615868995668672532\n"
-                    "token: XXXXXXXXXXXXXXXXXXXXXXXX.XXXXXX.XXXXXXXXXXXXXXXXXXXXXXXXXXX\n"
-                    "```".format(p))
-                await func.react(message, '❌')
-                return
-        new_sapphire_id = str(len(cfg.CONFIG['sapphires']) - 1)
-        new_config = deepcopy(cfg.CONFIG)
-        new_config['sapphires'][new_sapphire_id] = sapphire
-        cfg.CONFIG = utils.get_config()
-        utils.write_json(os.path.join(cfg.SCRIPT_DIR, 'config.json'), new_config, indent=4)
-        await admin.dm_channel.send("New sapphire added (#{}), now do `reload` here, and for the new bot.\n"
-                                    "Invite link for the bot is: <{}>".format(
-                                        new_sapphire_id,
-                                        cfg.INVITE_LINK.replace('@@CID@@', str(sapphire['client_id']))
-                                    ))
-        await func.react(message, '✅')
 
     if cmd == 'exit':
         attempts = 0
@@ -377,7 +380,7 @@ async def admin_command(cmd, ctx):
                 new_name = "⌛"
             await c.edit(name=new_name)
         except:
-            await admin.dm_channel.send(traceback.format_exc())
+            await channel.send(traceback.format_exc())
             await func.react(message, '❌')
         else:
             await func.react(message, '✅')
@@ -396,7 +399,7 @@ async def admin_command(cmd, ctx):
                         break
             utils.set_serv_settings(c.guild, settings)
         except:
-            await admin.dm_channel.send(traceback.format_exc())
+            await channel.send(traceback.format_exc())
             await func.react(message, '❌')
         else:
             await func.react(message, '✅')
@@ -407,7 +410,7 @@ async def admin_command(cmd, ctx):
             c = client.get_channel(cid)
             await c.delete()
         except:
-            await admin.dm_channel.send(traceback.format_exc())
+            await channel.send(traceback.format_exc())
             await func.react(message, '❌')
         else:
             await func.react(message, '✅')
@@ -428,7 +431,7 @@ async def admin_command(cmd, ctx):
         try:
             await u.dm_channel.send(msg)
         except:
-            await admin.dm_channel.send(traceback.format_exc())
+            await channel.send(traceback.format_exc())
             await func.react(message, '❌')
         else:
             await func.react(message, '✅')
@@ -449,7 +452,7 @@ async def admin_command(cmd, ctx):
                 if len(settings['auto_channels']) != len(tmp):
                     settings['auto_channels'] = tmp
                     utils.set_serv_settings(g, settings)
-            await admin.dm_channel.send("Cleaned {} of {} primaries".format(n_real_primaries, n_primaries))
+            await channel.send("Cleaned {} of {} primaries".format(n_real_primaries, n_primaries))
         except:
-            await admin.dm_channel.send(traceback.format_exc())
+            await channel.send(traceback.format_exc())
             await func.react(message, '❌')

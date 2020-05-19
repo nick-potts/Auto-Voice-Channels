@@ -1,10 +1,11 @@
+import asyncio
+import concurrent.futures
 import os
 import logging
 import traceback
 import subprocess
 import sys
 from datetime import datetime
-from pprint import pformat
 from time import time
 
 import cfg
@@ -20,22 +21,27 @@ from functions import log, echo
 from discord.ext.tasks import loop
 
 logging.basicConfig(level=logging.INFO)
+ADMIN_CHANNEL = None
+ADMIN = None
 
-USE_SHARDS = False
-if os.path.exists(os.path.join(cfg.SCRIPT_DIR, 'venv.bat')):
-    # Working locally, use dev bot
-    print("DEV")
+DEV_BOT = cfg.CONFIG['DEV'] if 'DEV' in cfg.CONFIG else False
+GOLD_BOT = False
+NUM_SHARDS = cfg.CONFIG['num_shards'] if 'num_shards' in cfg.CONFIG else 0
+if DEV_BOT:
+    print("DEV BOT")
     TOKEN = cfg.CONFIG['token_dev']
-    USE_SHARDS = True
 else:
     TOKEN = cfg.CONFIG['token']
-    USE_SHARDS = True
 try:
     sid = int(sys.argv[1])
     if str(sid) in cfg.CONFIG["sapphires"]:
         cfg.SAPPHIRE_ID = sid
         TOKEN = cfg.CONFIG["sapphires"][str(sid)]['token']
-        USE_SHARDS = False
+        NUM_SHARDS = 1
+    elif 'gold_id' in cfg.CONFIG and sid == 6666:
+        GOLD_BOT = True
+        TOKEN = cfg.CONFIG["token_gold"]
+        NUM_SHARDS = 1
     else:
         print("NO SAPPHIRE WITH ID " + str(sid))
         sys.exit()
@@ -56,39 +62,81 @@ utils.clean_permastore()
 utils.update_server_location()
 
 
-@loop(seconds=1)
-async def cleanup(client):
-    if client.is_ready():
-        # TODO probably possible to run into race conditions
-        t = time()
+class LoopChecks:
+    def __init__(self, client, tick):
+        self._client = client
+        self._time = time()
+        self._loop = asyncio.get_event_loop()
+        self._tick = tick
 
-        tmp = {}
-        for c, v in cfg.CURRENT_REQUESTS.items():
-            if t - v < 5:
-                tmp[c] = v
-        cfg.CURRENT_REQUESTS = tmp
+    async def waiting_loop(self):
+        print("Starting Waiting Loop")
+        while True:
+            tmp = {}
+            for c, v in cfg.CURRENT_REQUESTS.items():
 
-        tmp = {}
-        for u, v in cfg.USER_REQUESTS.items():
-            if t - v < 15:
-                tmp[u] = v
-            else:
-                if u in cfg.USER_ABUSE_EVENTS:
-                    del(cfg.USER_ABUSE_EVENTS[u])
-        cfg.USER_REQUESTS = tmp
+                if self._time - v < 5:
+                    tmp[c] = v
+            cfg.CURRENT_REQUESTS = tmp
+            await asyncio.sleep(self._tick)
 
-        tmp = {}
-        for e, v in cfg.ERROR_MESSAGES.items():
-            if t - v < (60 * 5):  # Forget messages older than 5 minutes
-                tmp[e] = v
-        cfg.ERROR_MESSAGES = tmp
+    async def active_loop(self):
+        print("Starting Active Loop")
+        while True:
+            tmp = {}
+            for u, v in cfg.USER_REQUESTS.items():
 
-        tmp = {}
-        for e, v in cfg.DM_ERROR_MESSAGES.items():
-            if t - v < 15:
-                tmp[e] = v
-        cfg.DM_ERROR_MESSAGES = tmp
+                if self._time - v < 15:
+                    tmp[u] = v
+                else:
+                    if u in cfg.USER_ABUSE_EVENTS:
+                        del (cfg.USER_ABUSE_EVENTS[u])
+            cfg.USER_REQUESTS = tmp
+            await asyncio.sleep(self._tick)
 
+    async def other_loops(self):
+        print("Starting Other Loops")
+        while True:
+            tmp = {}
+            for e, v in cfg.ERROR_MESSAGES.items():
+                if self._time - v < (60 * 5):  # Forget messages older than 5 minutes
+                    tmp[e] = v
+            cfg.ERROR_MESSAGES = tmp
+
+            tmp = {}
+            for e, v in cfg.DM_ERROR_MESSAGES.items():
+                if self._time - v < 15:
+                    tmp[e] = v
+            cfg.DM_ERROR_MESSAGES = tmp
+            await asyncio.sleep(self._tick)
+
+    async def timer(self):
+        print("Starting Timer")
+        while True:
+            self._time = time()
+            await asyncio.sleep(self._tick)
+
+    def start_loops(self):
+        self._loop.create_task(self.timer())
+        self._loop.create_task(self.waiting_loop())
+        self._loop.create_task(self.active_loop())
+        self._loop.create_task(self.other_loops())
+
+
+def cleanup(client, tick_):
+    # TODO probably possible to run into race conditions
+
+    start_time = time()
+
+    LoopSystem = LoopChecks(client=client, tick=tick_)
+    LoopSystem.start_loops()
+
+    async def first_start(client):
+        global ADMIN_CHANNEL
+        global ADMIN
+
+        while not client.is_ready():
+            await asyncio.sleep(1)
         if not cfg.FIRST_RUN_COMPLETE:
             cfg.FIRST_RUN_COMPLETE = True
             for guild in client.guilds:
@@ -102,40 +150,45 @@ async def cleanup(client):
                 if len(guilds) == 1 and guilds[0].id in cfg.PREFIXES:
                     text = cfg.PREFIXES[guilds[0].id] + 'help'
             else:
-                text = "🚧Nothing🚧"
+                text = "🚧No guilds🚧"
             await client.change_presence(activity=discord.Activity(name=text, type=discord.ActivityType.watching))
+
+            if 'admin_channel' in cfg.CONFIG:
+                ADMIN_CHANNEL = client.get_channel(cfg.CONFIG['admin_channel'])
+
+        if ADMIN is None:
+            ADMIN = client.get_user(cfg.CONFIG['admin_id'])
+
+    asyncio.get_event_loop().create_task(first_start(client))
+
+    end_time = time()
+    fn_name = "cleanup"
+    cfg.TIMINGS[fn_name] = end_time - start_time
 
 
 @loop(seconds=cfg.CONFIG['loop_interval'])
 async def main_loop(client):
     start_time = time()
     if client.is_ready():
-        tt = {}  # Sum of all timings
-        for guild in func.get_guilds(client):
-            if not func.is_gold(guild):
-                settings = utils.get_serv_settings(guild)
-                if settings['enabled'] and settings['auto_channels']:
-                    timings = await check_all_channels(guild, settings)
-                    tt = {k: timings.get(k, 0) + tt.get(k, 0) for k in set(timings) | set(tt)}
+        with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
+            thread_ = executor.submit(func.get_guilds, client)
+        while not thread_.done():
+            await asyncio.sleep(0.1)
+        guilds = thread_.result()
+        for guild in guilds:
+            settings = utils.get_serv_settings(guild)
+            if settings['enabled'] and settings['auto_channels']:
+                await check_all_channels(guild, settings)
         end_time = time()
-        cfg.TICK_TIME = end_time - start_time
-        timing_log = ("Total: {0:.2f}s\n```py\n{1}\n```".format(
-            sum(tt.values()),
-            pformat(tt, indent=4)
-        ))
-        cfg.TIMING_LOG = timing_log
-        if cfg.TICK_TIME > 20:
-            text = "TICK time was: {0:.3f}s\n{1}".format(cfg.TICK_TIME, timing_log)
-            log(text)
-            await func.admin_log(
-                ":exclamation:" * round(min(max((cfg.TICK_TIME - 5) / 2, 1), 10)) +
-                text, client, important=cfg.TICK_TIME > 40)
-        # print("    TICK", '{0:.3f}s'.format(cfg.TICK_TIME))
+        fn_name = "main_loop"
+        cfg.TIMINGS[fn_name] = end_time - start_time
+        if cfg.TIMINGS[fn_name] > 20:
+            await func.log_timings(client, fn_name)
 
-        # Check for new patrons using gold role in support server
+        # Check for new patrons using patron role in support server
         if cfg.SAPPHIRE_ID is None:
             try:
-                num_patrons = len(client.get_guild(601015720200896512).get_role(607911570046976002).members)
+                num_patrons = len(client.get_guild(601015720200896512).get_role(606482184043364373).members)
             except AttributeError:
                 pass
             else:
@@ -145,28 +198,73 @@ async def main_loop(client):
                     cfg.NUM_PATRONS = num_patrons
 
 
-@loop(seconds=cfg.CONFIG['gold_interval'])
-async def gold_loop(client):
+@loop(seconds=cfg.CONFIG['loop_interval'])
+async def creation_loop(client):
+
+    @utils.func_timer()
+    async def check_create(guild, settings):
+        for pid in settings['auto_channels']:
+            p = client.get_channel(int(pid))
+            if p is not None:
+                users_waiting = [m for m in p.members if not func.user_request_is_locked(m)]
+                for u in users_waiting:
+                    await func.create_secondary(guild, p, u)
+
     start_time = time()
     if client.is_ready():
-        for guild in func.get_guilds(client):
-            if func.is_gold(guild):
-                settings = utils.get_serv_settings(guild)
-                if settings['enabled'] and settings['auto_channels']:
-                    await check_all_channels(guild, settings)
+        with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
+            thread_ = executor.submit(func.get_guilds, client)
+        while not thread_.done():
+            await asyncio.sleep(0.1)
+        guilds = thread_.result()
+        for guild in guilds:
+            settings = utils.get_serv_settings(guild)
+            if settings['enabled'] and settings['auto_channels']:
+                await check_create(guild, settings)
         end_time = time()
-        cfg.G_TICK_TIME = end_time - start_time
-        if cfg.G_TICK_TIME > 10:
-            await func.admin_log(
-                ":exclamation:" * round(min(max((cfg.G_TICK_TIME - 5) / 2, 1), 10)) +
-                " 💳 TICK time was {0:.3f}s".format(cfg.G_TICK_TIME), client, important=cfg.G_TICK_TIME > 10)
-        # print("    GOLD TICK", '{0:.3f}s'.format(cfg.G_TICK_TIME))
+        fn_name = "creation_loop"
+        cfg.TIMINGS[fn_name] = end_time - start_time
+        if cfg.TIMINGS[fn_name] > 20:
+            await func.log_timings(client, fn_name)
+
+
+@loop(seconds=cfg.CONFIG['loop_interval'] * 2)
+async def deletion_loop(client):
+
+    @utils.func_timer()
+    async def check_empty(guild, settings):
+        # Delete empty secondaries, in case they didn't get caught somehow (e.g. errors, downtime)
+        secondaries = func.get_secondaries(guild, settings)
+        voice_channels = [x for x in guild.channels if isinstance(x, discord.VoiceChannel)]
+        for v in voice_channels:
+            if v.name != "⌛":  # Ignore secondary channels that are currently being created
+                if v.id in secondaries:
+                    if not v.members:
+                        await func.delete_secondary(guild, v)
+
+    start_time = time()
+    if client.is_ready():
+        with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
+            thread_ = executor.submit(func.get_guilds, client)
+        while not thread_.done():
+            await asyncio.sleep(0.1)
+        guilds = thread_.result()
+        for guild in guilds:
+            settings = utils.get_serv_settings(guild)
+            if settings['enabled'] and settings['auto_channels']:
+                await check_empty(guild, settings)
+                await func.remove_broken_channels(guild)
+        end_time = time()
+        fn_name = "deletion_loop"
+        cfg.TIMINGS[fn_name] = end_time - start_time
+        if cfg.TIMINGS[fn_name] > 20:
+            await func.log_timings(client, fn_name)
 
 
 @loop(minutes=2)
 async def check_dead(client):
-    if client.is_ready():
-        # Channel already deleted, remove from settings
+
+    def for_looper(client):
         for guild in func.get_guilds(client):
             settings = utils.get_serv_settings(guild)  # Need fresh in case some were deleted
             dead_secondaries = []
@@ -199,9 +297,20 @@ async def check_dead(client):
                     if s in cfg.ATTEMPTED_CHANNEL_NAMES:
                         del cfg.ATTEMPTED_CHANNEL_NAMES[s]
 
+    start_time = time()
+    if client.is_ready():
+        with concurrent.futures.ThreadPoolExecutor() as pool:
+            await client.loop.run_in_executor(pool, for_looper, client)
+        end_time = time()
+        fn_name = "check_dead"
+        cfg.TIMINGS[fn_name] = end_time - start_time
+        if cfg.TIMINGS[fn_name] > 20:
+            await func.log_timings(client, fn_name)
+
 
 @loop(seconds=2)
 async def check_votekicks(client):
+    start_time = time()
     if client.is_ready():
         to_remove = []
         votekicks = list(cfg.VOTEKICKS.keys())
@@ -218,6 +327,7 @@ async def check_votekicks(client):
                 return
 
             in_favor = len(vk['in_favor'])
+            log("TESTVOTEKICK: {} ({}/{})".format(vk['offender'].display_name, in_favor, vk['required_votes']), guild)
             if in_favor >= vk['required_votes']:
                 to_remove.append(mid)
                 log("Kicked {} from {} ({}/{})".format(vk['offender'].display_name,
@@ -251,16 +361,34 @@ async def check_votekicks(client):
                 )
             elif time() > vk['end_time'] + 5:
                 to_remove.append(mid)
+                log("VOTEKICK TIMED OUT: {} ({}/{}) {} {}".format(
+                    vk['offender'].display_name, in_favor, vk['required_votes'], mid, type(mid)), guild)
                 await vk['message'].edit(content="‼ **Votekick** timed out: Insufficient votes received "
                                                  "({0}/{1}), required: {2}/{1}.".format(in_favor,
                                                                                         len(vk['participants']) + 1,
                                                                                         vk['required_votes']))
         for mid in to_remove:
+            log("REMOVING VOTEKICK: {} {} len:{} keys:{}".format(
+                mid,
+                type(mid),
+                len(cfg.VOTEKICKS),
+                ', '.join([str(k) + " " + str(type(k)) for k in cfg.VOTEKICKS.keys()])),
+                guild)
             del cfg.VOTEKICKS[mid]
+            print("... len:{} keys:{}".format(
+                  len(cfg.VOTEKICKS),
+                  ', '.join([str(k) + " " + str(type(k)) for k in cfg.VOTEKICKS.keys()])))
+
+        end_time = time()
+        fn_name = "check_votekicks"
+        cfg.TIMINGS[fn_name] = end_time - start_time
+        if cfg.TIMINGS[fn_name] > 20:
+            await func.log_timings(client, fn_name)
 
 
 @loop(seconds=3)
 async def create_join_channels(client):
+    start_time = time()
     if not client.is_ready():
         return
 
@@ -278,7 +406,7 @@ async def create_join_channels(client):
             # Unable to create join channel for 120s
             to_remove.append(pc)
             await pcv['text_channel'].send(
-                ":warning: {} For some reason I was unable to create your \"⇧ Join\" channel, please try again later. "
+                ":warning: {} For some reason I was unable to create your \"⇩ Join\" channel, please try again later. "
                 "Your channel is still private, but there's now no way for anyone to join you. "
                 "Use `{}public` to make it public again."
                 "".format(pcv['creator'].mention, pcv['prefix']))
@@ -295,13 +423,7 @@ async def create_join_channels(client):
                     creator = pcv['creator'].display_name
                     vc = pcv['voice_channel']
 
-                    c_position = 0
-                    voice_channels = [x for x in guild.channels if isinstance(x, type(vc))]
-                    voice_channels.sort(key=lambda ch: ch.position)
-                    for x in voice_channels:
-                        c_position += 1
-                        if x.id == vc.id:
-                            break
+                    c_position = vc.position
 
                     overwrites = vc.overwrites
                     k = guild.default_role
@@ -310,15 +432,14 @@ async def create_join_channels(client):
                     overwrites[k] = v
 
                     try:
-                        jc = await guild.create_voice_channel("⇧ Join {}".format(creator),  # TODO creator can change
-                                                              position=c_position,
+                        jc = await guild.create_voice_channel("⇩ Join {}".format(creator),  # TODO creator can change
                                                               category=vc.category,
                                                               overwrites=overwrites)
                     except discord.errors.Forbidden:
                         to_remove.append(pc)
                         try:
                             await pcv['text_channel'].send(
-                                ":warning: {} I don't have permission to make the \"⇧ Join\" channel for you anymore."
+                                ":warning: {} I don't have permission to make the \"⇩ Join\" channel for you anymore."
                                 "".format(pcv['creator'].mention))
                         except:
                             log("Failed to create join-channel, and failed to notify {}".format(creator))
@@ -344,6 +465,12 @@ async def create_join_channels(client):
             traceback.print_exc()
             pass
 
+    end_time = time()
+    fn_name = "create_join_channels"
+    cfg.TIMINGS[fn_name] = end_time - start_time
+    if cfg.TIMINGS[fn_name] > 10:
+        await func.log_timings(client, fn_name)
+
 
 @loop(minutes=3)
 async def update_seed(client):
@@ -353,26 +480,41 @@ async def update_seed(client):
 
 @loop(minutes=5)
 async def dynamic_tickrate(client):
+    start_time = time()
     if client.is_ready():
         current_channels = utils.num_active_channels(func.get_guilds(client))
-        new_tickrate = current_channels / 8
-        new_tickrate = max(3, min(65, new_tickrate))
+        new_tickrate = current_channels / 7
+        new_tickrate = max(3, min(100, new_tickrate))
         new_seed_interval = current_channels / 45
         new_seed_interval = max(1.5, min(15, new_seed_interval))
         if cfg.SAPPHIRE_ID is None:
             print("New tickrate is {0:.1f}s, seed interval is {1:.2f}m".format(new_tickrate, new_seed_interval))
         main_loop.change_interval(seconds=new_tickrate)
+        creation_loop.change_interval(seconds=new_tickrate)
+        deletion_loop.change_interval(seconds=new_tickrate * 2)
         update_seed.change_interval(minutes=new_seed_interval)
         cfg.TICK_RATE = new_tickrate
+
+        end_time = time()
+        fn_name = "dynamic_tickrate"
+        cfg.TIMINGS[fn_name] = end_time - start_time
+        if cfg.TIMINGS[fn_name] > 20:
+            await func.log_timings(client, fn_name)
+
+
+def get_potentials():
+    with open(os.path.join(cfg.SCRIPT_DIR, "secondaries.txt"), 'r') as f:
+        potentials = f.read()
+    return potentials
 
 
 @loop(minutes=5.22)
 async def lingering_secondaries(client):
+    start_time = time()
     if client.is_ready():
-        start_time = time()
         potentials = None
-        with open(os.path.join(cfg.SCRIPT_DIR, "secondaries.txt"), 'r') as f:
-            potentials = f.read()
+        with concurrent.futures.ThreadPoolExecutor() as pool:
+            potentials = await client.loop.run_in_executor(pool, get_potentials)
         potentials = potentials.split('\n')
         if potentials:
             potentials = set(potentials[-10000:])  # Sets apparently give better performance. Discard all but last 10k.
@@ -396,11 +538,15 @@ async def lingering_secondaries(client):
                             except Exception:
                                 traceback.print_exc()
         end_time = time()
-        print("Permastore took {0:.3f}s to check ({1}).".format(end_time - start_time, len(potentials)))
+        fn_name = "lingering_secondaries"
+        cfg.TIMINGS[fn_name] = end_time - start_time
+        if cfg.TIMINGS[fn_name] > 5:
+            await func.log_timings(client, fn_name)
 
 
-@loop(minutes=30)
+@loop(hours=2.4)
 async def analytics(client):
+    start_time = time()
     if client.is_ready() and cfg.SAPPHIRE_ID is None:
         fp = os.path.join(cfg.SCRIPT_DIR, "analytics.json")
         guilds = func.get_guilds(client)
@@ -415,7 +561,14 @@ async def analytics(client):
             'ng': len(guilds),
             'm': round(psutil.virtual_memory().used / 1024 / 1024 / 1024, 2),
         }
-        utils.write_json(fp, analytics, indent=None)
+        with concurrent.futures.ThreadPoolExecutor() as pool:
+            await client.loop.run_in_executor(
+                pool, utils.write_json, fp, analytics)
+        end_time = time()
+        fn_name = "analytics"
+        cfg.TIMINGS[fn_name] = end_time - start_time
+        if cfg.TIMINGS[fn_name] > 10:
+            await func.log_timings(client, fn_name)
 
 
 @loop(minutes=2)
@@ -429,7 +582,7 @@ async def update_status(client):
             nc = utils.num_active_channels(guilds)
             text = "{}help | {} channel{}".format(prefix, nc, ("s" if nc != 1 else ""))
         else:
-            text = "🚧Nothing🚧"
+            text = "🚧No guilds🚧"
 
         old_text = ""
         try:
@@ -452,24 +605,7 @@ async def check_patreon():
 
 async def check_all_channels(guild, settings):
 
-    async def check_create(guild, settings):
-        for pid in settings['auto_channels']:
-            p = client.get_channel(int(pid))
-            if p is not None:
-                users_waiting = [m for m in p.members if not func.user_request_is_locked(m)]
-                for u in users_waiting:
-                    await func.create_secondary(guild, p, u)
-
-    async def check_empty(guild, settings):
-        # Delete empty secondaries, in case they didn't get caught somehow (e.g. errors, downtime)
-        secondaries = func.get_secondaries(guild, settings)
-        voice_channels = [x for x in guild.channels if isinstance(x, discord.VoiceChannel)]
-        for v in voice_channels:
-            if v.name != "⌛":  # Ignore secondary channels that are currently being created
-                if v.id in secondaries:
-                    if not v.members:
-                        await func.delete_secondary(guild, v)
-
+    @utils.func_timer()
     async def check_rename(guild, settings):
         # Update secondary channel names
         settings = utils.get_serv_settings(guild)  # Need fresh in case some were deleted
@@ -484,7 +620,7 @@ async def check_all_channels(guild, settings):
                         templates[s.id] = settings['auto_channels'][p]['template']
                     if "name" in sv:
                         templates[s.id] = sv['name']
-            secondaries = sorted(secondaries, key=lambda x: x.position)
+            secondaries = sorted(secondaries, key=lambda x: discord.utils.snowflake_time(x.id))
             for i, s in enumerate(secondaries):
                 await func.rename_channel(guild=guild,
                                           channel=s,
@@ -505,25 +641,7 @@ async def check_all_channels(guild, settings):
     timings = {}
 
     try:
-        st = time()
-        await check_create(guild, settings)
-        et = time()
-        timings['check_create'] = et - st
-
-        st = time()
-        await check_empty(guild, settings)
-        et = time()
-        timings['check_empty'] = et - st
-
-        st = time()
         await check_rename(guild, settings)
-        et = time()
-        timings['check_rename'] = et - st
-
-        st = time()
-        await func.remove_broken_channels(guild)
-        et = time()
-        timings['remove_broken_channels'] = et - st
 
     except Exception:
         traceback.print_exc()
@@ -565,8 +683,8 @@ class MyClient(discord.AutoShardedClient):
         await func.admin_log("🟥🟧🟨🟩   **Ready**   🟩🟨🟧🟥", self)
 
 
-if USE_SHARDS:
-    client = MyClient(shard_count=6)
+if NUM_SHARDS > 1:
+    client = MyClient(shard_count=NUM_SHARDS)
 else:
     client = MyClient()
 
@@ -593,70 +711,117 @@ async def on_message(message):
     if not client.is_ready():
         return
 
-    if message.channel.id == 601348321566654475:  # Message in #admin channel of support server
-        if message.author.name == "Zapier" and (
-            "Gold" in message.content or
-            "Sapphire" in message.content or
-            "Diamond" in message.content
-        ):
-            await func.check_patreon(force_update=True)
-
     if message.author.bot:
         # Don't respond to self or bots
         return
 
     guilds = func.get_guilds(client)
 
-    if not message.guild:  # DM
-        if message.author.bot:
-            return
+    admin = ADMIN
+    admin_channels = []
+    if admin is not None:
+        admin_channels = [admin.dm_channel]
+    if 'admin_channel' in cfg.CONFIG and ADMIN_CHANNEL is not None:
+        admin_channels.append(ADMIN_CHANNEL)
+    if message.channel in admin_channels:
+        split = message.content.split(' ')
+        cmd = split[0].split('\n')[0].lower()
+        params_str = message.content[len(cmd):].strip()
+        params = params_str.split(' ')
 
-        admin = client.get_user(cfg.CONFIG['admin_id'])
-        if message.author.id == cfg.CONFIG['admin_id'] and message.channel == admin.dm_channel:
-            split = message.content.split(' ')
-            cmd = split[0].split('\n')[0].lower()
-            params_str = message.content[len(cmd):].strip()
-            params = params_str.split(' ')
-
-            if cmd == 'reload':
-                m = utils.strip_quotes(params_str)
-                success = await reload_modules(m)
-                await func.react(message, '✅' if success else '❌')
-            else:
-                ctx = {
-                    'client': client,
-                    'admin': admin,
-                    'message': message,
-                    'params': params,
-                    'params_str': params_str,
-                    'guilds': guilds,
-                    'LAST_COMMIT': LAST_COMMIT,
-                }
-                await admin_commands.admin_command(cmd, ctx)
+        if cmd == 'reload':
+            m = utils.strip_quotes(params_str)
+            success = await reload_modules(m)
+            await func.react(message, '✅' if success else '❌')
         else:
-            if 'help' in message.content and len(message.content) <= len("@Auto Voice Channels help"):
-                await message.channel.send("Sorry I don't respond to commands in DMs, "
-                                           "you need to type the commands in a channel in your server.\n"
-                                           "If you've tried that already, then make sure I have the right permissions "
-                                           "to see and reply to your commands in that channel.")
-            else:
-                await admin.dm_channel.send(embed=discord.Embed(
-                    title="DM from **{}** [`{}`]:".format(message.author.name, message.author.id),
-                    description=message.content
-                ))
+            ctx = {
+                'client': client,
+                'admin': admin,
+                'message': message,
+                'params': params,
+                'params_str': params_str,
+                'guilds': guilds,
+                'LAST_COMMIT': LAST_COMMIT,
+            }
+            await admin_commands.admin_command(cmd, ctx)
         return
 
-    if message.channel.id == 615908341364949001:  # Message in #avc-bot-commands channel of T1
-        if message.author.id == cfg.CONFIG['admin_id']:
-            split = message.content.split(' ')
-            cmd = split[0].lower()
-            params = split[1:]
-            params_str = ' '.join(params)
-            if cmd == 'reload':
-                m = utils.strip_quotes(params_str)
-                success = await reload_modules(m)
-                await message.channel.send("{} {}".format("✅ Reloaded" if success else "❌ Failed to load", m))
+    if not message.guild:  # DM
+        if 'help' in message.content and len(message.content) <= len("@Auto Voice Channels help"):
+            await message.channel.send("Sorry I don't respond to commands in DMs, "
+                                       "you need to type the commands in a channel in your server.\n"
+                                       "If you've tried that already, then make sure I have the right permissions "
+                                       "to see and reply to your commands in that channel.")
+        elif message.content.lower().startswith("power-overwhelming"):
+            channel = message.channel
+            params_str = message.content[len("power-overwhelming"):].strip()
+            if not params_str:
+                await channel.send("You need to specify a guild ID. "
+                                   "Try typing `who am I` to get a list of guilds we're both in")
                 return
+            auth_guilds = params_str.replace(' ', '\n').split('\n')
+            for auth_guild in auth_guilds:
+                try:
+                    g = client.get_guild(int(auth_guild))
+                    if g is None:
+                        await channel.send("`{}` is not a guild I know about, "
+                                           "maybe you need to invite me there first?".format(auth_guild))
+                        return
+                except ValueError:
+                    await channel.send("`{}` is not a valid guild ID, try typing "
+                                       "`who am I` to get a list of guilds we're both in.".format(auth_guild))
+                    return
+                except Exception as e:
+                    error_text = "Auth Error `{}`\nUser `{}`\nCMD `{}`".format(type(e).__name__,
+                                                                               message.author.id,
+                                                                               message.content)
+                    await func.admin_log(error_text, ctx['client'])
+                    log(error_text)
+                    error_text = traceback.format_exc()
+                    await func.admin_log(error_text, ctx['client'])
+                    log(error_text)
+                    return False, ("A `{}` error occured :(\n"
+                                   "An admin has been notified and will be in touch.\n"
+                                   "In the meantime, try asking for help in the support server: "
+                                   "https://discord.gg/qhMrz6u".format(type(e).__name__))
+
+            ctx = {
+                'message': message,
+                'channel': channel,
+                'client': client,
+            }
+            auth_guilds = [int(g) for g in auth_guilds]
+            success, response = await func.power_overwhelming(ctx, auth_guilds)
+
+            if success or response != "NO RESPONSE":
+                log("DM CMD {}: {}".format("Y" if success else "F", message.content))
+
+            if success:
+                if response:
+                    if response != "NO RESPONSE":
+                        await echo(response, channel, message.author)
+                else:
+                    await func.react(message, '✅')
+            else:
+                if response != "NO RESPONSE":
+                    await func.react(message, '❌')
+                    if response:
+                        await echo(response, channel, message.author)
+        elif message.content.lower() in ["who am i", "who am i?"]:
+            in_guilds = []
+            for g in client.guilds:
+                if message.author in g.members:
+                    in_guilds.append("`{}` **{}**".format(g.id, g.name))
+            if in_guilds:
+                await message.channel.send("We're both in the following guilds:\n{}".format('\n'.join(in_guilds)))
+            else:
+                await message.channel.send("I'm not in any of the same guilds as you.")
+        else:
+            await admin_channels[-1].send(embed=discord.Embed(
+                title="DM from **{}** [`{}`]:".format(message.author.name, message.author.id),
+                description=message.content
+            ))
+        return
 
     if message.guild not in guilds:
         return
@@ -756,6 +921,7 @@ async def on_reaction_add(reaction, user):
             if time() < vk['end_time']:
                 if user not in vk['in_favor'] and user in vk['participants']:
                     vk['in_favor'].append(user)
+                    log("{} voted to kick {}".format(user.display_name, vk['offender'].display_name), guild)
         return
 
     to_delete = []
@@ -815,7 +981,10 @@ async def on_reaction_add(reaction, user):
                 except discord.errors.NotFound:
                     pass
     for uid in to_delete:
-        del cfg.JOINS_IN_PROGRESS[uid]
+        try:
+            del cfg.JOINS_IN_PROGRESS[uid]
+        except KeyError:
+            pass  # Already deleted
 
 
 @client.event
@@ -975,9 +1144,10 @@ async def on_guild_remove(guild):
         client)
 
 
-cleanup.start(client)
+cleanup(client=client, tick_=1)
 main_loop.start(client)
-gold_loop.start(client)
+creation_loop.start(client)
+deletion_loop.start(client)
 check_dead.start(client)
 check_votekicks.start(client)
 create_join_channels.start(client)
