@@ -141,9 +141,16 @@ def cleanup(client, tick_):
             cfg.FIRST_RUN_COMPLETE = True
             for guild in client.guilds:
                 while discord.utils.get(guild.voice_channels, name="boing") is not None:
-                    await discord.utils.get(guild.voice_channels, name="boing").delete()
+                    try:
+                        await discord.utils.get(guild.voice_channels, name="boing").delete()
+                    except:
+                        print("Error occured removing dead bounce channel")
+                        await func.admin_log("Failed to remove boing channel", client)
                 while discord.utils.get(guild.voice_channels, name="bounce") is not None:
-                    await discord.utils.get(guild.voice_channels, name="bounce").delete()
+                    try:
+                        await discord.utils.get(guild.voice_channels, name="bounce").delete()
+                    except:
+                        await func.admin_log("Failed to remove bounce channel", client)
             guilds = func.get_guilds(client)
             if guilds:
                 text = 'vc/help'
@@ -386,7 +393,7 @@ async def check_votekicks(client):
             await func.log_timings(client, fn_name)
 
 
-@loop(seconds=3)
+@loop(seconds=1)
 async def create_join_channels(client):
     start_time = time()
     if not client.is_ready():

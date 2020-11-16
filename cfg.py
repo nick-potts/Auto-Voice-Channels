@@ -65,8 +65,8 @@ SEED = int(time())
 CONFIG = get_config()
 
 defaults = {
-    'loop_interval': 7,
-    'gold_interval': 3,
+    'loop_interval': 0.5,
+    'gold_interval': 0.5,
     'sapphires': {}
 }
 for d, dv in defaults.items():
