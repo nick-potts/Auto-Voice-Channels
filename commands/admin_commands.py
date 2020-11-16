@@ -2,7 +2,7 @@ import json
 import os
 import sys
 import traceback
-from datetime import datetime
+from datetime import datetime, date
 
 import cfg
 import discord
@@ -115,14 +115,21 @@ async def admin_command(cmd, ctx):
             )
         ))
 
+    if cmd == 'ping':
+        r = await channel.send(". . .")
+        t1 = message.created_at
+        t2 = r.created_at
+        response_time = (t2 - t1).total_seconds()
+        e = '🔴🔴🔴' if response_time > 5 else ('🟠🟠' if response_time > 1 else '🟢')
+        await r.edit(content="**{0} {1:.1f}s**".format(e, response_time))
+
     if cmd == 'top':
         top_guilds = []
         for g in guilds:
             s = func.get_secondaries(g)
-            if s:
-                top_guilds.append({"name": g.name,
-                                   "size": len([m for m in g.members if not m.bot]),
-                                   "num": len(s)})
+            top_guilds.append({"name": g.name,
+                               "size": len([m for m in g.members if not m.bot]),
+                               "num": len(s) if s is not None else 0})
         top_guilds = sorted(top_guilds, key=lambda x: x['num'], reverse=True)[:10]
         r = "**Top Guilds:**"
         for g in top_guilds:
@@ -241,6 +248,24 @@ async def admin_command(cmd, ctx):
                 await channel.send("{}\n{}".format(head, haste_url))
         else:
             await func.react(message, '❌')
+
+    if cmd == 'refetch':
+        gid = utils.strip_quotes(params_str)
+        try:
+            gid = int(gid)
+        except ValueError:
+            await func.react(message, '❌')
+            return
+
+        g = client.get_guild(gid)
+
+        if g is None:
+            await func.react(message, '❓')
+            return
+
+        utils.get_serv_settings(g, force_refetch=True)
+        await func.react(message, '✅')
+        return
 
     if cmd == 'disable':
         try:
@@ -371,6 +396,45 @@ async def admin_command(cmd, ctx):
             print("Failed to close", cfg.WRITES_IN_PROGRESS)
             await func.react(message, '❌')
 
+    if cmd == 'loop':
+        mode = params[0]
+        loop_name = params[1]
+        try:
+            loop = ctx['loops'][loop_name]
+            modes = {  # Dict of possible loop functions/attrs as [fn, arg]
+                'current_loop': [loop.current_loop, None],
+                'next_iteration': [loop.next_iteration, None],
+                'next_run': [loop.next_iteration, None],  # Alias
+                'start': [loop.start, client],
+                'stop': [loop.stop, None],
+                'cancel': [loop.cancel, None],
+                'restart': [loop.restart, client],
+                'is_being_cancelled': [loop.is_being_cancelled, None],
+                'last_run': [loop.last_run, None],
+            }
+            if mode not in modes:
+                await func.react(message, '❓')
+                return
+            fn, arg = modes[mode]
+            if callable(fn):
+                if arg is None:
+                    r = fn()
+                else:
+                    r = fn(arg)
+            else:
+                r = fn
+            if r is not None:
+                if isinstance(r, date):
+                    r = r.astimezone(pytz.timezone(cfg.CONFIG['log_timezone']))
+                    await channel.send(r.strftime("%Y-%m-%d %H:%M:%S"))
+                else:
+                    await channel.send(str(r))
+            await func.react(message, '✅')
+        except:
+            await channel.send(traceback.format_exc())
+            await channel.send("Loops: \n{}".format('\n'.join(ctx['loops'].keys())))
+            await func.react(message, '❌')
+
     if cmd == 'rename':
         try:
             cid = utils.strip_quotes(params[0])
@@ -453,6 +517,33 @@ async def admin_command(cmd, ctx):
                     settings['auto_channels'] = tmp
                     utils.set_serv_settings(g, settings)
             await channel.send("Cleaned {} of {} primaries".format(n_real_primaries, n_primaries))
+        except:
+            await channel.send(traceback.format_exc())
+            await func.react(message, '❌')
+
+    if cmd == 'leaveinactive':
+        params_str = utils.strip_quotes(params_str)
+        try:
+            total_guilds = 0
+            inactive_guilds = 0
+            cfg.CONFIG['leave_inactive'] = []
+            for g in client.guilds:
+                total_guilds += 1
+                if g and (not utils.guild_is_active(g) or g not in guilds):
+                    cfg.CONFIG['leave_inactive'].append(g.id)
+                    inactive_guilds += 1
+                    if params_str == "go":
+                        try:
+                            await g.leave()
+                        except discord.errors.NotFound:
+                            pass
+            if params_str == "go":
+                await channel.send("Left {} of {} guilds.".format(inactive_guilds, total_guilds))
+            else:
+                await channel.send("Will leave {} of {} guilds. "
+                                   "Rerun command with 'go' at end to actually leave them.".format(
+                                       inactive_guilds, total_guilds))
+            cfg.CONFIG['leave_inactive'] = []
         except:
             await channel.send(traceback.format_exc())
             await func.react(message, '❌')

@@ -21,16 +21,18 @@
 * Go to the directory: `cd Auto-Voice-Channels`
 * Make folder to store guild settings: `mkdir guilds`
 * Install pip: `sudo apt-get -y install python3-pip`
-* Install requirements: `python3 -m pip install -r requirements.txt`
 * Install venv: `pip3 install virtualenv`
 * Make venv: `python3 -m virtualenv bot-env`
 * Use venv: `. bot-env/bin/activate`
+* Install requirements: `python3 -m pip install -r requirements.txt`
 * Create your application + bot here: <https://discordapp.com/developers/applications>
-* Set up `config.json`:
+* Enable both **Presence** and **Server Members** Privileged Gateway Intents in the Bot section.
+* Create a `config.json` file in the Auto-Voice-Channels folder and fill it in:
   * `admin_id` is your ID, for the bot to DM you when it logs on, joins servers, gets errors, etc.
   * `client_id` is the bot ID.
   * `log_timezone` is for the time displayed in logs, see [this list](https://stackoverflow.com/questions/13866926/is-there-a-list-of-pytz-timezones).
   * `token` is your bot's private token you can find [here](https://discordapp.com/developers/applications) - do not share it with anyone else.
+  * There are a number of [optional settings](https://github.com/gregzaal/Auto-Voice-Channels/wiki/Optional-configuration) too, which aren't necessary to set but provide some further configuration options if needed.
 
 ```json
 {

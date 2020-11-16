@@ -173,8 +173,10 @@ def cleanup(client, tick_):
     cfg.TIMINGS[fn_name] = end_time - start_time
 
 
-@loop(seconds=cfg.CONFIG['loop_interval'])
+# @loop(seconds=cfg.CONFIG['loop_interval'])
+@loop(minutes=10)
 async def main_loop(client):
+    main_loop.last_run = datetime.now(pytz.utc)
     start_time = time()
     if client.is_ready():
         with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
@@ -201,12 +203,13 @@ async def main_loop(client):
             else:
                 if cfg.NUM_PATRONS != num_patrons:
                     if cfg.NUM_PATRONS != -1:  # Skip first run, since patrons are fetched on startup already.
-                        await func.check_patreon(force_update=TOKEN != cfg.CONFIG['token_dev'], client=client)
+                        await func.check_patreon(force_update=(not DEV_BOT), client=client)
                     cfg.NUM_PATRONS = num_patrons
 
 
 @loop(seconds=cfg.CONFIG['loop_interval'])
 async def creation_loop(client):
+    creation_loop.last_run = datetime.now(pytz.utc)
 
     @utils.func_timer()
     async def check_create(guild, settings):
@@ -237,6 +240,7 @@ async def creation_loop(client):
 
 @loop(seconds=cfg.CONFIG['loop_interval'] * 2)
 async def deletion_loop(client):
+    deletion_loop.last_run = datetime.now(pytz.utc)
 
     @utils.func_timer()
     async def check_empty(guild, settings):
@@ -270,6 +274,7 @@ async def deletion_loop(client):
 
 @loop(minutes=2)
 async def check_dead(client):
+    check_dead.last_run = datetime.now(pytz.utc)
 
     def for_looper(client):
         for guild in func.get_guilds(client):
@@ -317,6 +322,7 @@ async def check_dead(client):
 
 @loop(seconds=2)
 async def check_votekicks(client):
+    check_votekicks.last_run = datetime.now(pytz.utc)
     start_time = time()
     if client.is_ready():
         to_remove = []
@@ -395,6 +401,7 @@ async def check_votekicks(client):
 
 @loop(seconds=1)
 async def create_join_channels(client):
+    create_join_channels.last_run = datetime.now(pytz.utc)
     start_time = time()
     if not client.is_ready():
         return
@@ -481,22 +488,24 @@ async def create_join_channels(client):
 
 @loop(minutes=3)
 async def update_seed(client):
+    update_seed.last_run = datetime.now(pytz.utc)
     if client.is_ready():
         cfg.SEED = int(time())
 
 
 @loop(minutes=5)
 async def dynamic_tickrate(client):
+    dynamic_tickrate.last_run = datetime.now(pytz.utc)
     start_time = time()
     if client.is_ready():
         current_channels = utils.num_active_channels(func.get_guilds(client))
         new_tickrate = current_channels / 7
-        new_tickrate = max(3, min(100, new_tickrate))
+        new_tickrate = max(10, min(100, new_tickrate))
         new_seed_interval = current_channels / 45
-        new_seed_interval = max(1.5, min(15, new_seed_interval))
+        new_seed_interval = max(10, min(15, new_seed_interval))
         if cfg.SAPPHIRE_ID is None:
             print("New tickrate is {0:.1f}s, seed interval is {1:.2f}m".format(new_tickrate, new_seed_interval))
-        main_loop.change_interval(seconds=new_tickrate)
+        main_loop.change_interval(seconds=max(301, new_tickrate))
         creation_loop.change_interval(seconds=new_tickrate)
         deletion_loop.change_interval(seconds=new_tickrate * 2)
         update_seed.change_interval(minutes=new_seed_interval)
@@ -517,6 +526,7 @@ def get_potentials():
 
 @loop(minutes=5.22)
 async def lingering_secondaries(client):
+    lingering_secondaries.last_run = datetime.now(pytz.utc)
     start_time = time()
     if client.is_ready():
         potentials = None
@@ -553,15 +563,16 @@ async def lingering_secondaries(client):
 
 @loop(hours=2.4)
 async def analytics(client):
+    analytics.last_run = datetime.now(pytz.utc)
     start_time = time()
     if client.is_ready() and cfg.SAPPHIRE_ID is None:
         fp = os.path.join(cfg.SCRIPT_DIR, "analytics.json")
         guilds = func.get_guilds(client)
         if not os.path.exists(fp):
-            analytics = {}
+            data = {}
         else:
-            analytics = utils.read_json(fp)
-        analytics[datetime.now(pytz.timezone(cfg.CONFIG['log_timezone'])).strftime("%Y-%m-%d %H:%M")] = {
+            data = utils.read_json(fp)
+        data[datetime.now(pytz.timezone(cfg.CONFIG['log_timezone'])).strftime("%Y-%m-%d %H:%M")] = {
             'nc': utils.num_active_channels(guilds),
             'tt': round(cfg.TICK_TIME, 2),
             'tr': main_loop.seconds,
@@ -570,7 +581,7 @@ async def analytics(client):
         }
         with concurrent.futures.ThreadPoolExecutor() as pool:
             await client.loop.run_in_executor(
-                pool, utils.write_json, fp, analytics)
+                pool, utils.write_json, fp, data)
         end_time = time()
         fn_name = "analytics"
         cfg.TIMINGS[fn_name] = end_time - start_time
@@ -580,6 +591,7 @@ async def analytics(client):
 
 @loop(minutes=2)
 async def update_status(client):
+    update_status.last_run = datetime.now(pytz.utc)
     if client.is_ready():
         guilds = func.get_guilds(client)
         if guilds:
@@ -607,7 +619,23 @@ async def update_status(client):
 @loop(hours=3)
 async def check_patreon():
     # Will run at startup too, since it doesn't have to wait for client.is_ready
-    await func.check_patreon(force_update=cfg.SAPPHIRE_ID in [None, 0] and TOKEN != cfg.CONFIG['token_dev'])
+    await func.check_patreon(force_update=cfg.SAPPHIRE_ID in [None, 0] and not DEV_BOT)
+
+
+loops = {  # loops with client as only arg - passed to admin_commands's `loop` cmd
+    'main_loop': main_loop,
+    'deletion_loop': deletion_loop,
+    'check_dead': check_dead,
+    'check_votekicks': check_votekicks,
+    'create_join_channels': create_join_channels,
+    'update_seed': update_seed,
+    'dynamic_tickrate': dynamic_tickrate,
+    'lingering_secondaries': lingering_secondaries,
+    'analytics': analytics,
+    'update_status': update_status,
+}
+if 'disable_creation_loop' not in cfg.CONFIG or not cfg.CONFIG['disable_creation_loop']:
+    loops['creation_loop'] = creation_loop
 
 
 async def check_all_channels(guild, settings):
@@ -687,13 +715,17 @@ class MyClient(discord.AutoShardedClient):
             print("s{}: {} guilds".format(s, shards[s]))
         print('=' * 24)
 
-        await func.admin_log("🟥🟧🟨🟩   **Ready**   🟩🟨🟧🟥", self)
+        if 'disable_ready_message' in cfg.CONFIG and cfg.CONFIG['disable_ready_message']:
+            log("READY")
+        else:
+            await func.admin_log("🟥🟧🟨🟩   **Ready**   🟩🟨🟧🟥", self)
 
 
+heartbeat_timeout = cfg.CONFIG['heartbeat_timeout'] if 'heartbeat_timeout' in cfg.CONFIG else 60
 if NUM_SHARDS > 1:
-    client = MyClient(shard_count=NUM_SHARDS)
+    client = MyClient(shard_count=NUM_SHARDS, heartbeat_timeout=heartbeat_timeout)
 else:
-    client = MyClient()
+    client = MyClient(heartbeat_timeout=heartbeat_timeout)
 
 
 async def reload_modules(m):
@@ -749,6 +781,7 @@ async def on_message(message):
                 'params_str': params_str,
                 'guilds': guilds,
                 'LAST_COMMIT': LAST_COMMIT,
+                'loops': loops,
             }
             await admin_commands.admin_command(cmd, ctx)
         return
@@ -1143,25 +1176,19 @@ async def on_guild_remove(guild):
         settings['left'] = datetime.now(pytz.timezone(cfg.CONFIG['log_timezone'])).strftime("%Y-%m-%d %H:%M")
         utils.set_serv_settings(guild, settings)
         log("Left guild {} `{}` with {} members".format(guild.name, guild.id, num_members))
-    await func.admin_log(
-        ":new_moon: Left: **{}** (`{}`) - **{}** members".format(
-            func.esc_md(guild.name),
-            guild.id,
-            num_members),
-        client)
+    if 'leave_inactive' in cfg.CONFIG and guild.id in cfg.CONFIG['leave_inactive']:
+        pass
+    else:
+        await func.admin_log(
+            ":new_moon: Left: **{}** (`{}`) - **{}** members".format(
+                func.esc_md(guild.name),
+                guild.id,
+                num_members),
+            client)
 
 
 cleanup(client=client, tick_=1)
-main_loop.start(client)
-creation_loop.start(client)
-deletion_loop.start(client)
-check_dead.start(client)
-check_votekicks.start(client)
-create_join_channels.start(client)
-dynamic_tickrate.start(client)
-lingering_secondaries.start(client)
-update_seed.start(client)
-analytics.start(client)
-update_status.start(client)
+for ln, l in loops.items():
+    l.start(client)
 check_patreon.start()
 client.run(TOKEN)
