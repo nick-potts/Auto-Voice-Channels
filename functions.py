@@ -14,6 +14,7 @@ import translate
 import utils
 from utils import log
 
+import roman
 try:
     import patreon_info
 except ImportError:
@@ -644,12 +645,12 @@ async def power_overwhelming(ctx, auth_guilds):
         for g in guilds:
             await admin_log("🔑 Authenticated **{}**'s {} server {} `{}`".format(
                 author.name, reward, g.name, g.id
-            ), ctx['client'], important=True)
+            ), ctx['client'], important=False)
             r += "\n✅ Nice! *{}* is now a **{}** server.".format(g.name, reward)
         for a in prev_auths:
             if a not in [g.id for g in guilds]:
                 r += "\n❗ Removed authentication from `{}`.".format(a)
-        if reward in ["Diamond", "Sapphire"]:
+        if reward in ["Diamond", "Sapphire"] and cfg.SAPPHIRE_ID is None:
             r += ("\nPlease give me ~{} hours to set up your private bot - "
                   "I'll DM you when it's ready to make the swap!".format(12 if reward == "Sapphire" else 24))
     else:
@@ -806,6 +807,7 @@ async def rename_channel(guild, channel, settings, primary_id, templates=None, i
         if i == -1:
             i_str = "?"
         cname = cname.replace('##', '#' + i_str)
+        cname = cname.replace('+#', roman.toRoman(int(i + 1)))
         for x in range(5):
             cname = cname.replace('${}#'.format('0' * x), i_str.zfill(x + 1))
 
@@ -1125,20 +1127,6 @@ async def create_secondary(guild, primary, creator, private=False):
 
     lock_user_request(creator, offset=20)  # Add offset in case creating the channel takes more than 3s
 
-    # Find what the channel position is supposed to be
-    # Channel.position is unreliable, so we have to find it manually.
-    c_position = 0
-    voice_channels = [x for x in guild.channels if isinstance(x, type(primary))]
-    voice_channels.sort(key=lambda ch: ch.position)
-    above = True
-    if ('above' in settings['auto_channels'][primary.id] and
-            settings['auto_channels'][primary.id]['above'] is False):
-        above = False
-    c_position = primary.position
-    if not above:
-        secondaries = settings['auto_channels'][primary.id]['secondaries'].keys()
-        c_position += 1 + len([v for v in voice_channels if v.id in secondaries and v.position > primary.position])
-
     # Copy stuff from primary channel
     user_limit = 0
     if primary.user_limit:
@@ -1180,8 +1168,18 @@ async def create_secondary(guild, primary, creator, private=False):
             category=primary.category,
             bitrate=bitrate,
             user_limit=user_limit,
-            overwrites=overwrites
+            overwrites=overwrites,
+            rtc_region=primary.rtc_region
         )
+    except discord.errors.Forbidden:
+        await dm_user(
+            creator,
+            ":warning: Sorry, I was unable to create a channel for you as I don't have permission to do so. "
+            "Please let an admin of the server **{}** know about this issue so that "
+            "they can fix this.".format(esc_md(guild.name)))
+        await creator.move_to(None)  # Kick them from voice channel
+        lock_user_request(creator)
+        return
     except discord.errors.HTTPException as e:
         if "Maximum number of channels in category reached" in e.text:
             log("Failed to create channel for {}: Max channels reached".format(creator.display_name), guild)
@@ -1207,8 +1205,21 @@ async def create_secondary(guild, primary, creator, private=False):
     settings['last_activity'] = int(time())
     utils.set_serv_settings(guild, settings)
 
+    # Set channel position
+    above = True
+    if ('above' in settings['auto_channels'][primary.id] and
+            settings['auto_channels'][primary.id]['above'] is False):
+        above = False
+    offset = 0
+    if not above:
+        offset = len(settings['auto_channels'][primary.id]['secondaries']) - 1
     try:
-        await c.edit(position=c_position)
+        await c.move(
+            category=primary.category,
+            before=primary if above else None,
+            after=primary if not above else None,
+            offset=offset
+        )
     except discord.errors.Forbidden:
         # No idea why it sometimes throws this, seems like a bug.
         # If it can create channels, it certainly has permission to move them.
@@ -1384,15 +1395,17 @@ async def remove_broken_channels(guild):
                 except ValueError:
                     continue
                 vc = guild.get_channel(vcid)
-                if not vc:
+                if not vc and c.id not in cfg.IGNORE_FOR_DELETION:
                     try:
                         await c.delete()
+                    except discord.errors.Forbidden:
+                        log("Failed to delete text channel {} in guild {}".format(c.id, guild.id), guild)
                     except discord.errors.NotFound:
                         pass
 
     for r in guild.roles:
         front = "🎤🤖vc "
-        if r.name.startswith("🎤🤖vc "):
+        if r.name.startswith(front) and r.id not in cfg.IGNORE_FOR_DELETION:
             try:
                 vcid = int(r.name.split(front)[1])
             except ValueError:
@@ -1401,5 +1414,8 @@ async def remove_broken_channels(guild):
             if not vc:
                 try:
                     await r.delete()
+                except discord.errors.Forbidden:
+                    log("Failed to delete role {} in guild {}".format(r.id, guild.id), guild)
+                    cfg.IGNORE_FOR_DELETION.append(r.id)
                 except discord.errors.NotFound:
                     pass
