@@ -25,7 +25,7 @@ ADMIN_CHANNEL = None
 ADMIN = None
 
 DEV_BOT = cfg.CONFIG['DEV'] if 'DEV' in cfg.CONFIG else False
-GOLD_BOT = False
+GOLD_BOT = True
 NUM_SHARDS = cfg.CONFIG['num_shards'] if 'num_shards' in cfg.CONFIG else 0
 if DEV_BOT:
     print("DEV BOT")
